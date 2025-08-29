@@ -27,6 +27,7 @@
             if (pt) off = { x: pt.x - cx, z: pt.z - cz };
             threeCtx.drag = { id: info.id, meshType: info.meshType, target: info.target, instIndex: info.instIndex, offset: off, start: { x: cx, z: cz }, moved: false };
             try { if (threeCtx.controls) threeCtx.controls.enabled = false; } catch(_) {}
+            try { threeCtx.controlsFallback?.enable?.(false); } catch(_) {}
           }
 
           function threeCandidateFromCenterMeters(it, cx, cz){
@@ -123,6 +124,7 @@
             const drag = threeCtx.drag; if (!drag) { try { if (threeCtx.controls) threeCtx.controls.enabled = true; } catch(_) {} return; }
             const moved = !!drag.moved; threeCtx.drag = null;
             try { if (threeCtx.controls) threeCtx.controls.enabled = true; } catch(_) {}
+            try { threeCtx.controlsFallback?.enable?.(true); } catch(_) {}
             if (moved) { try { pushHistory(); } catch(_) {} try { recalc(); } catch(_) {} }
           }
 

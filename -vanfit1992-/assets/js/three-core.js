@@ -208,7 +208,7 @@
   // Minimal fallback controls when OrbitControls is unavailable
   function threeInstallSimpleControls(cam, dom){
     try { threeCtx.controlsFallback?.dispose?.(); } catch(_) {}
-    const state = { dragging:false, btn:0, sx:0, sy:0, az:-Math.PI/4, pol:Math.PI/4, rad:8, target:new THREE.Vector3(0,0,0) };
+    const state = { dragging:false, btn:0, sx:0, sy:0, az:-Math.PI/4, pol:Math.PI/4, rad:8, target:new THREE.Vector3(0,0,0), enabled:true };
     try {
       const off = cam.position.clone().sub(state.target);
       state.rad = Math.max(0.1, off.length());
@@ -223,10 +223,10 @@
       cam.position.set(state.target.x + x, state.target.y + y, state.target.z + z);
       cam.lookAt(state.target);
     }
-    function onDown(e){ state.dragging=true; state.btn=e.button; state.sx=e.clientX; state.sy=e.clientY; try{dom.setPointerCapture(e.pointerId);}catch(_){} }
-    function onMove(e){ if(!state.dragging) return; const dx=e.clientX-state.sx, dy=e.clientY-state.sy; state.sx=e.clientX; state.sy=e.clientY; if(state.btn===0){ state.az -= dx*0.005; state.pol += dy*0.005; } else { const k=state.rad*0.002; state.target.x -= dx*k; state.target.y += dy*k; } apply(); }
+    function onDown(e){ if(!state.enabled) return; state.dragging=true; state.btn=e.button; state.sx=e.clientX; state.sy=e.clientY; try{dom.setPointerCapture(e.pointerId);}catch(_){} }
+    function onMove(e){ if(!state.enabled || !state.dragging) return; const dx=e.clientX-state.sx, dy=e.clientY-state.sy; state.sx=e.clientX; state.sy=e.clientY; if(state.btn===0){ state.az -= dx*0.005; state.pol += dy*0.005; } else { const k=state.rad*0.002; state.target.x -= dx*k; state.target.y += dy*k; } apply(); }
     function onUp(e){ state.dragging=false; try{dom.releasePointerCapture(e.pointerId);}catch(_){} }
-    function onWheel(e){ e.preventDefault(); state.rad *= (1 + e.deltaY*0.001); state.rad = Math.max(0.5, Math.min(500, state.rad)); apply(); }
+    function onWheel(e){ if(!state.enabled) return; e.preventDefault(); state.rad *= (1 + e.deltaY*0.001); state.rad = Math.max(0.5, Math.min(500, state.rad)); apply(); }
     function preventCtx(e){ e.preventDefault(); }
     dom.addEventListener('pointerdown', onDown);
     dom.addEventListener('pointermove', onMove);
@@ -234,7 +234,11 @@
     dom.addEventListener('wheel', onWheel, { passive:false });
     dom.addEventListener('contextmenu', preventCtx);
     apply();
-    threeCtx.controlsFallback = { dispose(){ dom.removeEventListener('pointerdown', onDown); dom.removeEventListener('pointermove', onMove); dom.removeEventListener('pointerup', onUp); dom.removeEventListener('wheel', onWheel); dom.removeEventListener('contextmenu', preventCtx); } };
+    threeCtx.controlsFallback = { 
+      dispose(){ dom.removeEventListener('pointerdown', onDown); dom.removeEventListener('pointermove', onMove); dom.removeEventListener('pointerup', onUp); dom.removeEventListener('wheel', onWheel); dom.removeEventListener('contextmenu', preventCtx); },
+      setTarget(v){ state.target.copy(v); apply(); },
+      enable(on){ state.enabled = !!on; if(!on) state.dragging=false; }
+    };
   }
 
           // Compute XZ bounds (in meters) of current items or fallback to hull

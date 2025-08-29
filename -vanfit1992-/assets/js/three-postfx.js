@@ -200,6 +200,8 @@
               if (!targets.length) return;
               const hits = ray.intersectObjects(targets, true);
               if (!hits || !hits.length) return;
+              // Prevent OrbitControls from reacting to this press; we're starting a drag
+              try { ev.preventDefault(); ev.stopPropagation(); } catch(_) {}
               const hit = hits[0];
               let m = hit.object;
               while (m && !m.userData?.itemId && !m.isInstancedMesh && m.parent) m = m.parent;
