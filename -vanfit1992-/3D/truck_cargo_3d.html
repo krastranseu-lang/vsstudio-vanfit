@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8" />
+  <title>Przestrzeń ładunkowa 3D</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: #0f1728;
+      color: #e8eef9;
+      font-family: system-ui, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+    }
+    h2 { margin-top: 16px; margin-bottom: 8px; font-weight: 600; }
+    /* Container for the WebGL canvas */
+    #canvasContainer {
+      width: 900px;
+      height: 500px;
+      background: #0b1120;
+      border-radius: 12px;
+      overflow: hidden;
+      position: relative;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+    }
+    #controls {
+      margin-top: 12px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      font-size: 14px;
+    }
+    #controls label {
+      color: #a0b5d0;
+    }
+    #controls input[type="number"] {
+      width: 60px;
+      padding: 4px;
+      border: 1px solid #2a3b5e;
+      border-radius: 6px;
+      background: #0f1728;
+      color: #e8eef9;
+    }
+    #controls button {
+      padding: 6px 14px;
+      border: none;
+      border-radius: 8px;
+      background: #ff5a00;
+      color: #fff;
+      font-weight: 600;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <h2>Przestrzeń ładunkowa 3D</h2>
+  <div id="canvasContainer"></div>
+  <div id="controls">
+    <label>Długość&nbsp;L (m): <input id="length" type="number" value="13.6" step="0.1" min="1" /></label>
+    <label>Szerokość&nbsp;W (m): <input id="width" type="number" value="2.45" step="0.05" min="1" /></label>
+    <label>Wysokość&nbsp;H (m): <input id="height" type="number" value="2.7" step="0.05" min="1" /></label>
+    <button id="update">Aktualizuj</button>
+  </div>
+  <!-- Load Three.js from CDN (r121 version, proven to load correctly) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r121/three.min.js"></script>
+  <script>
+    let scene, camera, renderer;
+    let cargo = null;
+ let floorGrid = null;
+    // Array to hold interactive goods (pallets, cartons)
+    let goods = [];
+    // Variables for dragging goods
+    let dragObject = null;
+    let dragOffset = new THREE.Vector3();
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+    // Horizontal plane at y=0.01 for dragging (slightly above grid to avoid z‑fighting)
+    const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.01);
+
+    // Global scale factor to enlarge cargo and goods on screen
+    const SCALE_FACTOR = 2;
+    // Target Y coordinate for camera lookAt; updated when cargo changes
+    let currentTargetY = 1.0;
+    let radius = 25;
+    let azimuth = -Math.PI / 4; // horizontal angle
+    let polar = Math.PI / 4;    // vertical angle
+    let pointerDown = false;
+    let startX = 0, startY = 0;
+
+    function init() {
+      // initialize scene and camera
+      // create scene and camera
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x0b1120);
+      const container = document.getElementById('canvasContainer');
+      const aspect = container.clientWidth / container.clientHeight;
+      camera = new THREE.PerspectiveCamera(45, aspect, 0.1, 200);
+      updateCamera();
+      // lights
+      const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
+      hemiLight.position.set(0, 50, 0);
+      scene.add(hemiLight);
+      const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+      dirLight.position.set(30, 60, 40);
+      scene.add(dirLight);
+      // renderer
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(container.clientWidth, container.clientHeight);
+      container.appendChild(renderer.domElement);
+      // event listeners
+      renderer.domElement.addEventListener('pointerdown', onPointerDown);
+      renderer.domElement.addEventListener('pointermove', onPointerMove);
+      document.addEventListener('pointerup', onPointerUp);
+      renderer.domElement.addEventListener('wheel', onWheel);
+      // initial cargo
+      const L = parseFloat(document.getElementById('length').value);
+      const W = parseFloat(document.getElementById('width').value);
+      const H = parseFloat(document.getElementById('height').value);
+      createCargo(L, W, H);
+      animate();
+    }
+
+    function updateCamera() {
+      // spherical to Cartesian
+      const x = radius * Math.sin(polar) * Math.cos(azimuth);
+      const z = radius * Math.sin(polar) * Math.sin(azimuth);
+      const y = radius * Math.cos(polar);
+      camera.position.set(x, y, z);
+      // look at the center of the cargo region; uses currentTargetY updated on cargo creation
+      camera.lookAt(new THREE.Vector3(0, currentTargetY, 0));
+    }
+
+    function createCargo(L, W, H) {
+      if (cargo) {
+        scene.remove(cargo);
+      }
+      const group = new THREE.Group();
+      /*
+       * Apply a global scale factor to enlarge the model on screen while keeping the numerical values intact.
+       * The dimensions L, W, H (in metres) entered by the user are multiplied by this factor for rendering.
+       */
+      const LScaled = L * SCALE_FACTOR;
+      const WScaled = W * SCALE_FACTOR;
+      const HScaled = H * SCALE_FACTOR;
+      // materials: right, left, top, bottom, front, back
+      const mats = [];
+      // choose a slightly lighter wall color for better visibility
+      const wallColor = 0x12284c;
+      mats[0] = new THREE.MeshStandardMaterial({ color: wallColor, transparent: true, opacity: 0.2 }); // right (positive x)
+      mats[1] = new THREE.MeshStandardMaterial({ color: wallColor, transparent: true, opacity: 0.2 }); // left  (negative x)
+      mats[2] = new THREE.MeshStandardMaterial({ color: wallColor, transparent: true, opacity: 0.2 }); // top   (positive y)
+      mats[3] = new THREE.MeshStandardMaterial({ color: 0x1a2f55, transparent: false, opacity: 1.0 }); // bottom (negative y) slightly darker
+      mats[4] = new THREE.MeshStandardMaterial({ color: wallColor, transparent: true, opacity: 0.05 }); // front (positive z)
+      mats[5] = new THREE.MeshStandardMaterial({ color: wallColor, transparent: true, opacity: 0.3 }); // back  (negative z)
+      const geometry = new THREE.BoxGeometry(LScaled, HScaled, WScaled);
+      // create box with the material array
+      const box = new THREE.Mesh(geometry, mats);
+      group.add(box);
+      // edges for the box (thicker lines for better visibility)
+      const edgeGeo = new THREE.EdgesGeometry(geometry);
+      const edgeMat = new THREE.LineBasicMaterial({ color: 0x83a1ff, linewidth: 1 });
+      const edges = new THREE.LineSegments(edgeGeo, edgeMat);
+      group.add(edges);
+      // floor grid helper: remove previous grid (if any) and create a new one of constant size.
+      // The grid stays the same size regardless of cargo dimensions.
+      // extend the grid helper to cover more of the scene.  Using a larger
+      // constant ensures the floor always fills the viewport even when the
+      // cargo dimensions change.  This value is in world units (metres) and
+      // is scaled by SCALE_FACTOR.
+      const GRID_CONSTANT = 160; // constant world units for grid size (metres scaled by scaleFactor)
+      const gridSize = GRID_CONSTANT;
+      const gridDivisions = Math.max(8, Math.ceil(gridSize * 2));
+      if (floorGrid) {
+        scene.remove(floorGrid);
+      }
+      floorGrid = new THREE.GridHelper(gridSize, gridDivisions, 0x223047, 0x223047);
+      // place grid at world y=0 (slightly above to prevent z-fighting)
+      floorGrid.position.set(0, 0.001, 0);
+      scene.add(floorGrid);
+      // position group so that the bottom of the box sits just above y=0.  A
+      // small epsilon lift avoids z‑fighting with the grid while making the
+      // lower edges clearly visible.  Raising to 0.02 emphasises the base.
+      group.position.set(0, HScaled / 2 + 0.02, 0);
+      // store current target Y for camera lookAt (use half the scaled height + lift)
+      currentTargetY = HScaled / 2 + 0.02;
+      cargo = group;
+      scene.add(cargo);
+      // update camera look target to match new cargo height
+      updateCamera();
+
+      // remove any existing goods from scene
+      goods.forEach(obj => scene.remove(obj));
+      goods = [];
+      // add default goods (pallet and carton) scaled according to scaleFactor
+      createGoods(LScaled, WScaled, HScaled);
+    }
+
+    /**
+     * Create default goods (a pallet and a carton) and add them to the scene.
+     * The goods are scaled according to the provided scaled dimensions of the cargo box.
+     * @param {number} LScaled length of cargo box (scaled)
+     * @param {number} WScaled width of cargo box (scaled)
+     * @param {number} HScaled height of cargo box (scaled)
+     */
+    function createGoods(LScaled, WScaled, HScaled) {
+      // Define pallet dimensions in metres and scale them
+      const palL = 1.2 * SCALE_FACTOR;
+      const palW = 0.8 * SCALE_FACTOR;
+      const palH = 0.15 * SCALE_FACTOR;
+      const palletGeom = new THREE.BoxGeometry(palL, palH, palW);
+      const palletMat = new THREE.MeshStandardMaterial({ color: 0x8a5a2b });
+      const pallet = new THREE.Mesh(palletGeom, palletMat);
+      // Position pallet near the front inside the cargo (along length) and centered in width.
+      // We shift by half the cargo length minus half the pallet length minus a small margin.
+      const margin = 0.1 * SCALE_FACTOR;
+      pallet.position.set(-LScaled / 2 + palL / 2 + margin, palH / 2 + 0.01, 0);
+      scene.add(pallet);
+      goods.push(pallet);
+      // Define carton dimensions and scale them
+      const cartL = 0.6 * SCALE_FACTOR;
+      const cartW = 0.4 * SCALE_FACTOR;
+      const cartH = 0.4 * SCALE_FACTOR;
+      const cartonGeom = new THREE.BoxGeometry(cartL, cartH, cartW);
+      const cartonMat = new THREE.MeshStandardMaterial({ color: 0xd8b28f });
+      const carton = new THREE.Mesh(cartonGeom, cartonMat);
+      // Position carton next to the pallet along the length (behind the pallet)
+      // We place it directly behind the pallet separated by a margin.
+      carton.position.set(-LScaled / 2 + palL + cartL / 2 + margin * 2, cartH / 2 + 0.01, 0);
+      scene.add(carton);
+      goods.push(carton);
+    }
+
+    function onPointerDown(e) {
+      // ignore clicks on UI inputs
+      if (e.target.tagName.toLowerCase() === 'input' || e.target.tagName.toLowerCase() === 'button') return;
+      // Convert mouse position to normalized device coordinates
+      const rect = renderer.domElement.getBoundingClientRect();
+      mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+      // Check if user clicked on any goods for dragging
+      const intersects = raycaster.intersectObjects(goods, true);
+      if (intersects.length > 0) {
+        dragObject = intersects[0].object;
+        // compute intersection with dragPlane to determine offset
+        const intersectPoint = new THREE.Vector3();
+        raycaster.ray.intersectPlane(dragPlane, intersectPoint);
+        dragOffset.set(intersectPoint.x - dragObject.position.x, 0, intersectPoint.z - dragObject.position.z);
+        return; // do not initiate rotation
+      }
+      // otherwise start rotating the scene
+      pointerDown = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      renderer.domElement.setPointerCapture(e.pointerId);
+    }
+
+    function onPointerMove(e) {
+      // if dragging a good, update its position on the plane
+      if (dragObject) {
+        const rect = renderer.domElement.getBoundingClientRect();
+        mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        raycaster.setFromCamera(mouse, camera);
+        const intersectPoint = new THREE.Vector3();
+        if (raycaster.ray.intersectPlane(dragPlane, intersectPoint)) {
+          dragObject.position.x = intersectPoint.x - dragOffset.x;
+          dragObject.position.z = intersectPoint.z - dragOffset.z;
+        }
+        return;
+      }
+      // rotate the scene if pointerDown is active
+      if (!pointerDown) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      startX = e.clientX;
+      startY = e.clientY;
+      // adjust rotation speed
+      azimuth -= dx * 0.005;
+      polar   -= dy * 0.005;
+      polar = Math.max(0.15, Math.min(Math.PI / 2 - 0.15, polar));
+      updateCamera();
+    }
+
+    function onPointerUp(e) {
+      if (dragObject) {
+        dragObject = null;
+      }
+      if (pointerDown) {
+        pointerDown = false;
+        renderer.domElement.releasePointerCapture(e.pointerId);
+      }
+    }
+
+    function onWheel(e) {
+      e.preventDefault();
+      radius += e.deltaY * 0.02;
+      radius = Math.max(5, Math.min(50, radius));
+      updateCamera();
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      renderer.render(scene, camera);
+    }
+
+    // handle resize
+    window.addEventListener('resize', () => {
+      const container = document.getElementById('canvasContainer');
+      const aspect = container.clientWidth / container.clientHeight;
+      camera.aspect = aspect;
+      camera.updateProjectionMatrix();
+      renderer.setSize(container.clientWidth, container.clientHeight);
+    });
+
+    // update button
+    document.getElementById('update').addEventListener('click', () => {
+      /*
+       * When parsing numeric inputs, support both comma and dot as decimal separators.
+       * Users with Polish locale may enter values like "13,6". Replace comma with dot before parsing.
+       */
+      const parseDim = (v) => parseFloat(v.replace(',', '.'));
+      const L = parseDim(document.getElementById('length').value);
+      const W = parseDim(document.getElementById('width').value);
+      const H = parseDim(document.getElementById('height').value);
+      createCargo(L, W, H);
+    });
+
+    // initialize after DOM ready
+    window.addEventListener('DOMContentLoaded', init);
+  </script>
+</body>
+</html>

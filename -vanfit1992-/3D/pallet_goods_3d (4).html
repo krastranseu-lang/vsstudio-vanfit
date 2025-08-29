@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8">
+  <title>3D paleta z kartonami – dynamiczna wizualizacja</title>
+  <style>
+    /* Zmienne CSS pozwalające na personalizację kolorów.
+       --pallet-color: kolor palety (RGBA lub HEX)
+       --box-color: kolor kartonów
+       --line-color: kolor linii warstw
+    */
+    :root {
+      --pallet-color: #d8a75d;
+      --box-color: #d8b28f;
+      --line-color: #8e8e8e;
+    }
+    /* Tło jednolite i reset marginesów */
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #0d1421;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: #e0eaff;
+      font-family: sans-serif;
+    }
+    #stage {
+      width: 600px;
+      height: 600px;
+      border-radius: 12px;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.6);
+      overflow: hidden;
+      position: relative;
+    }
+    #controls {
+      margin-top: 20px;
+      width: 600px;
+      background: rgba(12,18,36,0.8);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 10px;
+      padding: 14px 18px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    }
+    #controls label {
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+    }
+    #controls input {
+      width: 60px;
+      margin-left: 4px;
+      padding: 4px 6px;
+      border-radius: 4px;
+      border: 1px solid rgba(255,255,255,0.2);
+      background: #0d142a;
+      color: #e0eaff;
+    }
+    #controls button {
+      background: #ff7f2e;
+      color: #0d142a;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: bold;
+      transition: filter 0.15s;
+    }
+    #controls button:hover {
+      filter: brightness(1.1);
+    }
+  </style>
+</head>
+<body>
+  <div id="stage"></div>
+
+  <!-- Logo będzie wczytane jako texture z osadzonego ciągu base64. Ukryty element <img> nie jest już wymagany. -->
+  <!-- Ukrywamy tylko w razie przyszłego użycia, ale właściwa tekstura jest ładowana z base64 w skrypcie. -->
+  <img id="logoImg" src="logo.svg" style="display:none"/>
+  <div id="controls">
+    <label>Paleta L: <input id="palL" type="number" value="1.2" min="0.6" max="3" step="0.1"/> m</label>
+    <label>W: <input id="palW" type="number" value="0.8" min="0.5" max="2" step="0.1"/> m</label>
+    <label>Wysokość stosu: <input id="stackH" type="number" value="1.0" min="0.3" max="5" step="0.1"/> m</label>
+    <label>H kartonu: <input id="boxH" type="number" value="0.4" min="0.1" max="1" step="0.05"/> m</label>
+    <label>Warstwy: <input id="layers" type="number" value="2" min="1" max="8" step="1" disabled/></label>
+    <button id="updateDims">Aktualizuj</button>
+    <button id="rotateBtn">Obróć 90°</button>
+  </div>
+
+  <!-- Ładujemy Three.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r121/three.min.js"></script>
+  <script>
+    const stage = document.getElementById('stage');
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0d1421);
+    // Nie dodajemy żadnej siatki – tło puste
+    // Kamera perspektywiczna
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+    camera.position.set(4, 4.5, 4);
+    camera.lookAt(0, 0.5, 0);
+    // Renderer
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(stage.clientWidth, stage.clientHeight);
+    stage.appendChild(renderer.domElement);
+    // Światła
+    const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambient);
+    const directional = new THREE.DirectionalLight(0xffffff, 0.8);
+    directional.position.set(5, 10, 5);
+    scene.add(directional);
+    // Grupy na obiekty
+    let palletGroup = null;
+    let boxesGroup = null;
+    let layerLinesGroup = null;
+    // Grupa na paski (taśmy) z logo
+    let tapeGroup = null;
+    // Tekstura logo załadowana ze źródła
+    let logoTexture = null;
+    // Loader do tekstury logo
+    let rootGroup = new THREE.Group();
+    scene.add(rootGroup);
+    // Stała wysokość palety bazowej (EUR): 14 cm
+    const baseHeight = 0.14;
+
+    // Po załadowaniu ukrytego logo wczytaj je do CanvasTexture, aby użyć jako wzoru taśmy
+    const logoImg = document.getElementById('logoImg');
+    logoImg.addEventListener('load', () => {
+      // Utwórz tymczasowy canvas o rozmiarach logo
+      const canvas = document.createElement('canvas');
+      canvas.width = logoImg.naturalWidth;
+      canvas.height = logoImg.naturalHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(logoImg, 0, 0);
+      // Utwórz CanvasTexture z canvasu
+      logoTexture = new THREE.CanvasTexture(canvas);
+      logoTexture.wrapS = THREE.RepeatWrapping;
+      logoTexture.wrapT = THREE.ClampToEdgeWrapping;
+      logoTexture.needsUpdate = true;
+      // Po załadowaniu tekstury aktualizuj wymiary, aby dodać taśmy
+      updateDims();
+    });
+    // Funkcja pobierająca kolory z CSS zmiennych
+    function getColors() {
+      const styles = getComputedStyle(document.documentElement);
+      const palletColor = new THREE.Color(styles.getPropertyValue('--pallet-color').trim());
+      const boxColor = new THREE.Color(styles.getPropertyValue('--box-color').trim());
+      const lineColor = new THREE.Color(styles.getPropertyValue('--line-color').trim());
+      return { palletColor, boxColor, lineColor };
+    }
+    // Funkcja tworząca paletę jako prostokątną bryłę
+    function createPallet(L, W, H) {
+      if (palletGroup) rootGroup.remove(palletGroup);
+      const palletGeom = new THREE.BoxGeometry(L, H, W);
+      const { palletColor } = getColors();
+      const palletMat = new THREE.MeshStandardMaterial({ color: palletColor, roughness: 0.7, metalness: 0.1 });
+      const pallet = new THREE.Mesh(palletGeom, palletMat);
+      pallet.position.set(0, H / 2, 0);
+      palletGroup = new THREE.Group();
+      palletGroup.add(pallet);
+      rootGroup.add(palletGroup);
+    }
+    // Funkcja tworząca kartony
+    function createBoxes(L, W, Hbox, layers) {
+      if (boxesGroup) rootGroup.remove(boxesGroup);
+      boxesGroup = new THREE.Group();
+      // Zakładamy 2x2 kartony na warstwę
+      const cols = 2;
+      const rows = 2;
+      const boxL = L / cols;
+      const boxW = W / rows;
+      const { boxColor } = getColors();
+      for (let layer = 0; layer < layers; layer++) {
+        for (let i = 0; i < cols; i++) {
+          for (let j = 0; j < rows; j++) {
+            const geom = new THREE.BoxGeometry(boxL * 0.98, Hbox * 0.98, boxW * 0.98);
+            const mat = new THREE.MeshStandardMaterial({ color: boxColor, roughness: 0.6, metalness: 0.1 });
+            const box = new THREE.Mesh(geom, mat);
+            const x = -L / 2 + boxL / 2 + i * boxL;
+            const z = -W / 2 + boxW / 2 + j * boxW;
+            // y = wysokość palety bazowej (stała) + wysokość kartonu/2 + warstwa
+            const y = baseHeight + Hbox / 2 + layer * Hbox;
+            box.position.set(x, y, z);
+            boxesGroup.add(box);
+          }
+        }
+      }
+      rootGroup.add(boxesGroup);
+    }
+
+    // Funkcja tworząca linie na wysokości, aby zaznaczyć warstwy w stosie.
+    // segmentHeight – odległość pomiędzy poziomymi liniami, count – liczba segmentów
+    function createLayerLines(L, W, segmentHeight, count) {
+      // Usuń poprzednie linie jeśli istnieją
+      if (layerLinesGroup) rootGroup.remove(layerLinesGroup);
+      layerLinesGroup = new THREE.Group();
+      const { lineColor } = getColors();
+      const mat = new THREE.LineBasicMaterial({ color: lineColor });
+      for (let i = 1; i < count; i++) {
+        const y = baseHeight + segmentHeight * i;
+        const vertices = new Float32Array([
+          -L / 2, y, -W / 2,  L / 2, y, -W / 2,
+           L / 2, y, -W / 2,  L / 2, y,  W / 2,
+           L / 2, y,  W / 2, -L / 2, y,  W / 2,
+          -L / 2, y,  W / 2, -L / 2, y, -W / 2
+        ]);
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+        const line = new THREE.LineSegments(geom, mat);
+        layerLinesGroup.add(line);
+
+        // Dodaj linie krzyżujące się przez środek palety (po szerokości i długości)
+        const crossVerts = new Float32Array([
+          // Linia wzdłuż długości przez środek szerokości
+          -L / 2, y, 0,  L / 2, y, 0,
+          // Linia wzdłuż szerokości przez środek długości
+          0, y, -W / 2,  0, y,  W / 2
+        ]);
+        const crossGeom = new THREE.BufferGeometry();
+        crossGeom.setAttribute('position', new THREE.BufferAttribute(crossVerts, 3));
+        const crossLine = new THREE.LineSegments(crossGeom, mat);
+        layerLinesGroup.add(crossLine);
+      }
+      rootGroup.add(layerLinesGroup);
+    }
+
+    // Funkcja tworząca taśmy z logo wokół kartonów.
+    // tapePositions – tablica wysokości (w metrach), na których środku mają znaleźć się taśmy.
+    // tapeHeight – grubość taśmy (w metrach).
+    function createTapes(L, W, tapePositions, tapeHeight) {
+      // Usuń poprzednie taśmy, jeśli istnieją
+      if (tapeGroup) rootGroup.remove(tapeGroup);
+      tapeGroup = new THREE.Group();
+      // Liczba powtórzeń logo na metr – wartość można dopasować według potrzeb
+      const repeatPerMeter = 5;
+      tapePositions.forEach(yPos => {
+        // Materiał dla przedniej i tylnej taśmy (wzdłuż długości palety)
+        const matFrontBack = new THREE.MeshBasicMaterial({
+          // jeśli mamy logo, używamy go jako mapy; w przeciwnym razie zostawiamy mapę pustą
+          map: logoTexture ? logoTexture.clone() : null,
+          // kolor biały jako fallback – będzie widoczny, jeśli tekstura jest przezroczysta
+          color: 0xffffff,
+          transparent: logoTexture ? true : false,
+          side: THREE.DoubleSide
+        });
+        if (matFrontBack.map) {
+          matFrontBack.map.wrapS = THREE.RepeatWrapping;
+          matFrontBack.map.wrapT = THREE.ClampToEdgeWrapping;
+          matFrontBack.map.repeat.set(L * repeatPerMeter, 1);
+          matFrontBack.map.needsUpdate = true;
+        }
+        // Przód
+        const geomFront = new THREE.PlaneGeometry(L * 1.01, tapeHeight);
+        const meshFront = new THREE.Mesh(geomFront, matFrontBack);
+        meshFront.position.set(0, yPos, W / 2 + 0.003);
+        // Tył
+        const matBack = matFrontBack.clone();
+        if (matFrontBack.map) {
+          matBack.map = matFrontBack.map.clone();
+          matBack.map.wrapS = THREE.RepeatWrapping;
+          matBack.map.wrapT = THREE.ClampToEdgeWrapping;
+          matBack.map.repeat.set(L * repeatPerMeter, 1);
+          matBack.map.needsUpdate = true;
+        }
+        const geomBack = new THREE.PlaneGeometry(L * 1.01, tapeHeight);
+        const meshBack = new THREE.Mesh(geomBack, matBack);
+        meshBack.position.set(0, yPos, -W / 2 - 0.003);
+        meshBack.rotation.y = Math.PI;
+        // Materiał dla boków (wzdłuż szerokości palety)
+        const matSides = new THREE.MeshBasicMaterial({
+          map: logoTexture ? logoTexture.clone() : null,
+          color: 0xffffff,
+          transparent: logoTexture ? true : false,
+          side: THREE.DoubleSide
+        });
+        if (matSides.map) {
+          matSides.map.wrapS = THREE.RepeatWrapping;
+          matSides.map.wrapT = THREE.ClampToEdgeWrapping;
+          matSides.map.repeat.set(W * repeatPerMeter, 1);
+          matSides.map.needsUpdate = true;
+        }
+        // Lewa taśma
+        const geomLeft = new THREE.PlaneGeometry(W * 1.01, tapeHeight);
+        const meshLeft = new THREE.Mesh(geomLeft, matSides);
+        meshLeft.position.set(-L / 2 - 0.003, yPos, 0);
+        meshLeft.rotation.y = Math.PI / 2;
+        // Prawa taśma
+        const matRight = matSides.clone();
+        if (matSides.map) {
+          matRight.map = matSides.map.clone();
+          matRight.map.wrapS = THREE.RepeatWrapping;
+          matRight.map.wrapT = THREE.ClampToEdgeWrapping;
+          matRight.map.repeat.set(W * repeatPerMeter, 1);
+          matRight.map.needsUpdate = true;
+        }
+        const geomRight = new THREE.PlaneGeometry(W * 1.01, tapeHeight);
+        const meshRight = new THREE.Mesh(geomRight, matRight);
+        meshRight.position.set(L / 2 + 0.003, yPos, 0);
+        meshRight.rotation.y = -Math.PI / 2;
+        // Dodaj cztery powierzchnie do grupy taśm
+        tapeGroup.add(meshFront, meshBack, meshLeft, meshRight);
+      });
+      rootGroup.add(tapeGroup);
+    }
+    // Aktualizacja wymiarów
+    function updateDims() {
+      const L = parseFloat(document.getElementById('palL').value);
+      const W = parseFloat(document.getElementById('palW').value);
+      const stackH = parseFloat(document.getElementById('stackH').value);
+      const boxH = parseFloat(document.getElementById('boxH').value);
+      // Oblicz liczbę warstw: (wysokość stosu - wysokość palety bazowej) / wysokość kartonu
+      let layers = Math.max(1, Math.floor((stackH - baseHeight) / boxH));
+      // Zaktualizuj pole 'Warstwy'
+      document.getElementById('layers').value = layers;
+      createPallet(L, W, baseHeight);
+      createBoxes(L, W, boxH, layers);
+      // Oblicz warstwy linii według zasady 50 cm: dzielimy całkowitą wysokość stosu na segmenty około 0.5 m
+      const ruleSize = 0.5;
+      let lineCount = Math.max(1, Math.round(stackH / ruleSize));
+      const segmentHeight = stackH / lineCount;
+      createLayerLines(L, W, segmentHeight, lineCount);
+
+      /*
+       * Pozycje taśm: użytkownik chce dwa horyzontalne pasy (taśmy) wokół stosu
+       * niezależnie od liczby warstw. Wyznaczamy je proporcjonalnie, tak aby
+       * znajdowały się mniej więcej w 1/3 i 2/3 wysokości użytecznej (bez palety bazowej).
+       */
+      const tapeCount = 2;
+      const tapePositions = [];
+      const usableHeight = stackH - baseHeight;
+      for (let i = 1; i <= tapeCount; i++) {
+        const frac = i / (tapeCount + 1);
+        // Środek taśmy na danej wysokości
+        const y = baseHeight + usableHeight * frac;
+        tapePositions.push(y);
+      }
+      // Wysokość taśmy: 5 cm albo 1/3 wysokości kartonu – wybieramy mniejszą, aby taśma była proporcjonalna
+      const tapeHeight = Math.min(0.05, boxH / 3);
+      createTapes(L, W, tapePositions, tapeHeight);
+    }
+
+    // Udostępnij prosty API do zmiany kolorów zewnętrznym skryptom
+    window.pallet3dApi = {
+      /**
+       * Ustaw kolory wizualizacji.
+       * Przykład użycia:
+       * pallet3dApi.setColors({ palletColor: '#a36b3b', boxColor: '#cfa675', lineColor: '#555555' });
+       */
+      setColors: function({ palletColor, boxColor, lineColor }) {
+        if (palletColor) document.documentElement.style.setProperty('--pallet-color', palletColor);
+        if (boxColor) document.documentElement.style.setProperty('--box-color', boxColor);
+        if (lineColor) document.documentElement.style.setProperty('--line-color', lineColor);
+        // Odśwież scenę
+        updateDims();
+      }
+    };
+    // Inicjalizacja
+    updateDims();
+    // Obrót palety wraz z kartonami
+    let rotationY = 0;
+    document.getElementById('rotateBtn').addEventListener('click', () => {
+      rotationY += Math.PI / 2;
+    });
+    document.getElementById('updateDims').addEventListener('click', updateDims);
+    // Prosta kontrola obrotu myszką
+    let isDragging = false;
+    let prevX = 0;
+    stage.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      prevX = e.clientX;
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      const deltaX = e.clientX - prevX;
+      prevX = e.clientX;
+      rotationY += deltaX * 0.01;
+    });
+    window.addEventListener('mouseup', () => { isDragging = false; });
+    // Zoom sterowany kółkiem
+    stage.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const delta = e.deltaY * 0.005;
+      camera.position.multiplyScalar(1 + delta);
+    });
+    // Animacja
+    function animate() {
+      requestAnimationFrame(animate);
+      rootGroup.rotation.y = rotationY;
+      renderer.render(scene, camera);
+    }
+    animate();
+    // Reakcja na zmianę rozmiaru
+    window.addEventListener('resize', () => {
+      const size = stage.clientWidth;
+      renderer.setSize(size, size);
+      camera.aspect = 1;
+      camera.updateProjectionMatrix();
+    });
+  </script>
+</body>
+</html>

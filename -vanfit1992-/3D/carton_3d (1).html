@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8">
+  <title>3D karton – dynamiczna wizualizacja</title>
+  <style>
+    /* Zmienne CSS do personalizacji kolorów kartonu, taśm i linii */
+    :root {
+      --carton-color: #d8b28f;
+      --line-color: #8e8e8e;
+    }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #0d1421;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: #e0eaff;
+      font-family: sans-serif;
+    }
+    #stage {
+      width: 600px;
+      height: 600px;
+      border-radius: 12px;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.6);
+      overflow: hidden;
+      position: relative;
+    }
+    #controls {
+      margin-top: 20px;
+      width: 600px;
+      background: rgba(12,18,36,0.8);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 10px;
+      padding: 14px 18px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    }
+    #controls label {
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+    }
+    #controls input {
+      width: 60px;
+      margin-left: 4px;
+      padding: 4px 6px;
+      border-radius: 4px;
+      border: 1px solid rgba(255,255,255,0.2);
+      background: #0d142a;
+      color: #e0eaff;
+    }
+    #controls button {
+      background: #ff7f2e;
+      color: #0d142a;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: bold;
+      transition: filter 0.15s;
+    }
+    #controls button:hover {
+      filter: brightness(1.1);
+    }
+  </style>
+</head>
+<body>
+  <div id="stage"></div>
+  <!-- The logo texture is loaded via the Three.js TextureLoader in the script below. -->
+  <!-- A hidden <img> element is no longer necessary. -->
+  <div id="controls">
+    <label>Długość L: <input id="cartonL" type="number" value="1.0" min="0.2" max="3" step="0.1"/> m</label>
+    <label>Szerokość W: <input id="cartonW" type="number" value="0.6" min="0.2" max="2" step="0.1"/> m</label>
+    <label>Wysokość H: <input id="cartonH" type="number" value="0.6" min="0.1" max="3" step="0.1"/> m</label>
+    <button id="updateBtn">Aktualizuj</button>
+    <button id="rotateBtn">Obróć 90°</button>
+  </div>
+
+  <!-- Ładujemy Three.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r121/three.min.js"></script>
+  <script>
+    const stage = document.getElementById('stage');
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0d1421);
+    // Kamera
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+    camera.position.set(3, 4, 3);
+    camera.lookAt(0, 0.5, 0);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(stage.clientWidth, stage.clientHeight);
+    stage.appendChild(renderer.domElement);
+    // Światła
+    const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambient);
+    const directional = new THREE.DirectionalLight(0xffffff, 0.8);
+    directional.position.set(5, 10, 5);
+    scene.add(directional);
+    // Grupy na obiekty
+    let cartonGroup = null;
+    let layerLinesGroup = null;
+    let tapeGroup = null;
+    // Root group for easy rotation
+    const rootGroup = new THREE.Group();
+    scene.add(rootGroup);
+    // Logo texture
+    let logoTexture = null;
+    // Use a TextureLoader to load the logo. This avoids timing issues with <img> tags.
+    const textureLoader = new THREE.TextureLoader();
+    textureLoader.load('logo.svg', (tex) => {
+      // Configure wrapping to allow repeating along the tape length.
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      // Set the loaded texture and refresh the scene.
+      logoTexture = tex;
+      updateDims();
+    });
+    // Pobierz kolory z CSS
+    function getColors() {
+      const styles = getComputedStyle(document.documentElement);
+      return {
+        cartonColor: new THREE.Color(styles.getPropertyValue('--carton-color').trim()),
+        lineColor: new THREE.Color(styles.getPropertyValue('--line-color').trim())
+      };
+    }
+    // Stwórz pojedynczy karton
+    function createCarton(L, W, H) {
+      if (cartonGroup) rootGroup.remove(cartonGroup);
+      cartonGroup = new THREE.Group();
+      const geom = new THREE.BoxGeometry(L, H, W);
+      const { cartonColor } = getColors();
+      const mat = new THREE.MeshStandardMaterial({ color: cartonColor, roughness: 0.6, metalness: 0.1 });
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.position.set(0, H / 2, 0);
+      cartonGroup.add(mesh);
+      rootGroup.add(cartonGroup);
+    }
+    // Linie warstwowe
+    function createLayerLines(L, W, segmentHeight, count) {
+      if (layerLinesGroup) rootGroup.remove(layerLinesGroup);
+      layerLinesGroup = new THREE.Group();
+      const { lineColor } = getColors();
+      const mat = new THREE.LineBasicMaterial({ color: lineColor });
+      for (let i = 1; i < count; i++) {
+        const y = segmentHeight * i;
+        // Obwód
+        const vertices = new Float32Array([
+          -L / 2, y, -W / 2,  L / 2, y, -W / 2,
+           L / 2, y, -W / 2,  L / 2, y,  W / 2,
+           L / 2, y,  W / 2, -L / 2, y,  W / 2,
+          -L / 2, y,  W / 2, -L / 2, y, -W / 2
+        ]);
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+        const line = new THREE.LineSegments(geom, mat);
+        layerLinesGroup.add(line);
+        // Linie krzyżujące przez środek
+        const crossVerts = new Float32Array([
+          -L / 2, y, 0,   L / 2, y, 0,
+          0, y, -W / 2,   0, y,  W / 2
+        ]);
+        const crossGeom = new THREE.BufferGeometry();
+        crossGeom.setAttribute('position', new THREE.BufferAttribute(crossVerts, 3));
+        const crossLine = new THREE.LineSegments(crossGeom, mat);
+        layerLinesGroup.add(crossLine);
+      }
+      rootGroup.add(layerLinesGroup);
+    }
+    // Utwórz taśmy w ok. 1/3 i 2/3 wysokości
+    function createTapes(L, W, tapePositions, tapeHeight) {
+      if (tapeGroup) rootGroup.remove(tapeGroup);
+      tapeGroup = new THREE.Group();
+      const repeatPerMeter = 5;
+      tapePositions.forEach(yPos => {
+        // Materiały front/tył
+        const matFrontBack = new THREE.MeshBasicMaterial({
+          map: logoTexture ? logoTexture.clone() : null,
+          color: 0xffffff,
+          transparent: logoTexture ? true : false,
+          side: THREE.DoubleSide
+        });
+        if (matFrontBack.map) {
+          matFrontBack.map.wrapS = THREE.RepeatWrapping;
+          matFrontBack.map.wrapT = THREE.ClampToEdgeWrapping;
+          matFrontBack.map.repeat.set(L * repeatPerMeter, 1);
+          matFrontBack.map.needsUpdate = true;
+        }
+        const frontGeom = new THREE.PlaneGeometry(L * 1.01, tapeHeight);
+        const front = new THREE.Mesh(frontGeom, matFrontBack);
+        front.position.set(0, yPos, W / 2 + 0.003);
+        // Tył
+        const matBack = matFrontBack.clone();
+        if (matFrontBack.map) {
+          matBack.map = matFrontBack.map.clone();
+          matBack.map.wrapS = THREE.RepeatWrapping;
+          matBack.map.wrapT = THREE.ClampToEdgeWrapping;
+          matBack.map.repeat.set(L * repeatPerMeter, 1);
+          matBack.map.needsUpdate = true;
+        }
+        const backGeom = new THREE.PlaneGeometry(L * 1.01, tapeHeight);
+        const back = new THREE.Mesh(backGeom, matBack);
+        back.position.set(0, yPos, -W / 2 - 0.003);
+        back.rotation.y = Math.PI;
+        // Boki
+        const matSide = new THREE.MeshBasicMaterial({
+          map: logoTexture ? logoTexture.clone() : null,
+          color: 0xffffff,
+          transparent: logoTexture ? true : false,
+          side: THREE.DoubleSide
+        });
+        if (matSide.map) {
+          matSide.map.wrapS = THREE.RepeatWrapping;
+          matSide.map.wrapT = THREE.ClampToEdgeWrapping;
+          matSide.map.repeat.set(W * repeatPerMeter, 1);
+          matSide.map.needsUpdate = true;
+        }
+        const leftGeom = new THREE.PlaneGeometry(W * 1.01, tapeHeight);
+        const left = new THREE.Mesh(leftGeom, matSide);
+        left.position.set(-L / 2 - 0.003, yPos, 0);
+        left.rotation.y = Math.PI / 2;
+        const rightGeom = new THREE.PlaneGeometry(W * 1.01, tapeHeight);
+        const right = new THREE.Mesh(rightGeom, matSide.clone());
+        if (matSide.map) {
+          right.material.map = matSide.map.clone();
+          right.material.map.wrapS = THREE.RepeatWrapping;
+          right.material.map.wrapT = THREE.ClampToEdgeWrapping;
+          right.material.map.repeat.set(W * repeatPerMeter, 1);
+          right.material.map.needsUpdate = true;
+        }
+        right.position.set(L / 2 + 0.003, yPos, 0);
+        right.rotation.y = -Math.PI / 2;
+        tapeGroup.add(front, back, left, right);
+      });
+      rootGroup.add(tapeGroup);
+    }
+    // Aktualizacja sceny
+    function updateDims() {
+      const L = parseFloat(document.getElementById('cartonL').value);
+      const W = parseFloat(document.getElementById('cartonW').value);
+      const H = parseFloat(document.getElementById('cartonH').value);
+      createCarton(L, W, H);
+      // Zasada 50 cm: dzielimy wysokość na segmenty ok. 0.5 m
+      const ruleSize = 0.5;
+      let lineCount = Math.max(1, Math.round(H / ruleSize));
+      const segmentHeight = H / lineCount;
+      createLayerLines(L, W, segmentHeight, lineCount);
+      // Pozycje taśm – 1/3 i 2/3 wysokości
+      const tapePositions = [];
+      const tapeCount = 2;
+      for (let i = 1; i <= tapeCount; i++) {
+        const frac = i / (tapeCount + 1);
+        tapePositions.push(H * frac);
+      }
+      const tapeHeight = Math.min(0.05, H / 6);
+      createTapes(L, W, tapePositions, tapeHeight);
+    }
+    // Umożliw zmiany kolorów przez API
+    window.carton3dApi = {
+      setColors({ cartonColor, lineColor }) {
+        if (cartonColor) document.documentElement.style.setProperty('--carton-color', cartonColor);
+        if (lineColor) document.documentElement.style.setProperty('--line-color', lineColor);
+        updateDims();
+      }
+    };
+    // Inicjalizacja
+    updateDims();
+    // Interakcje
+    let rotationY = 0;
+    document.getElementById('rotateBtn').addEventListener('click', () => {
+      rotationY += Math.PI / 2;
+    });
+    document.getElementById('updateBtn').addEventListener('click', updateDims);
+    // Obrót myszką
+    let isDragging = false;
+    let prevX = 0;
+    stage.addEventListener('mousedown', e => {
+      isDragging = true;
+      prevX = e.clientX;
+    });
+    window.addEventListener('mousemove', e => {
+      if (!isDragging) return;
+      const deltaX = e.clientX - prevX;
+      prevX = e.clientX;
+      rotationY += deltaX * 0.01;
+    });
+    window.addEventListener('mouseup', () => { isDragging = false; });
+    // Zoom scroll
+    stage.addEventListener('wheel', e => {
+      e.preventDefault();
+      const delta = e.deltaY * 0.005;
+      camera.position.multiplyScalar(1 + delta);
+    });
+    // Animacja
+    function animate() {
+      requestAnimationFrame(animate);
+      rootGroup.rotation.y = rotationY;
+      renderer.render(scene, camera);
+    }
+    animate();
+    // Zmiana rozmiaru
+    window.addEventListener('resize', () => {
+      const size = stage.clientWidth;
+      renderer.setSize(size, size);
+      camera.aspect = 1;
+      camera.updateProjectionMatrix();
+    });
+  </script>
+</body>
+</html>
